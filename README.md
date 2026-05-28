@@ -75,7 +75,6 @@ This copies skills into:
 - `.claude/skills/` for Claude Code (project-level)
 - `.cursor/skills/` for Cursor (project-level)
 - `.agent/skills/` for Antigravity
-- `.gemini/skills/` for Gemini CLI
 
 ### Install globally for Cursor
 
@@ -92,14 +91,6 @@ node shared/scripts/skillpack-install.mjs --targets=antigravity-global
 ```
 
 This installs skills to `~/.agent/skills/` where Antigravity will discover them.
-
-### Install globally for Gemini CLI
-
-```bash
-node shared/scripts/skillpack-install.mjs --targets=gemini-global
-```
-
-This installs skills to `~/.gemini/skills/` where Gemini CLI will discover them.
 
 ### Available options
 

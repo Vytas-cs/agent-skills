@@ -13,10 +13,9 @@ function usage() {
       "  - <out>/claude/.claude/skills/<skill>/SKILL.md",
       "  - <out>/cursor/.cursor/skills/<skill>/SKILL.md",
       "  - <out>/antigravity/.agent/skills/<skill>/SKILL.md",
-      "  - <out>/gemini/.gemini/skills/<skill>/SKILL.md",
       "",
       "Options:",
-      "  --targets    Comma-separated list of targets (codex, vscode, claude, cursor; opt-in: antigravity, gemini). Default: codex,vscode,claude,cursor",
+      "  --targets    Comma-separated list of targets (codex, vscode, claude, cursor; opt-in: antigravity). Default: codex,vscode,claude,cursor",
       "  --skills     Comma-separated list of skill names to build. Default: all skills",
       "  --clean      Remove target directories before building",
       "",
@@ -104,7 +103,6 @@ function buildTarget({ repoRoot, outDir, target, skillDirs }) {
     claude: path.join(outDir, "claude", ".claude", "skills"),
     cursor: path.join(outDir, "cursor", ".cursor", "skills"),
     antigravity: path.join(outDir, "antigravity", ".agent", "skills"),
-    gemini: path.join(outDir, "gemini", ".gemini", "skills"),
   };
   const destSkillsRoot = rootByTarget[target];
   assert(destSkillsRoot, `Unknown target: ${target}`);
@@ -121,7 +119,7 @@ function buildTarget({ repoRoot, outDir, target, skillDirs }) {
   process.stdout.write(`OK: built ${target} skillpack at ${rel}\n`);
 }
 
-const VALID_TARGETS = ["codex", "vscode", "claude", "cursor", "antigravity", "gemini"];
+const VALID_TARGETS = ["codex", "vscode", "claude", "cursor", "antigravity"];
 
 function main() {
   const args = parseArgs(process.argv.slice(2));
