@@ -5,7 +5,7 @@ function usage() {
   process.stderr.write(
     [
       "Usage:",
-      "  node shared/scripts/skillpack-build.mjs [--out=dist] [--targets=codex,vscode,claude,cursor,antigravity,gemini] [--skills=skill1,skill2] [--clean]",
+      "  node shared/scripts/skillpack-build.mjs [--out=dist] [--targets=codex,vscode,claude,cursor] [--skills=skill1,skill2] [--clean]",
       "",
       "Outputs:",
       "  - <out>/codex/.codex/skills/<skill>/SKILL.md",
@@ -16,7 +16,7 @@ function usage() {
       "  - <out>/gemini/.gemini/skills/<skill>/SKILL.md",
       "",
       "Options:",
-      "  --targets    Comma-separated list of targets (codex, vscode, claude, cursor, antigravity, gemini). Default: codex,vscode,claude,cursor,antigravity,gemini",
+      "  --targets    Comma-separated list of targets (codex, vscode, claude, cursor; opt-in: antigravity, gemini). Default: codex,vscode,claude,cursor",
       "  --skills     Comma-separated list of skill names to build. Default: all skills",
       "  --clean      Remove target directories before building",
       "",
@@ -28,7 +28,7 @@ function usage() {
 }
 
 function parseArgs(argv) {
-  const args = { out: "dist", targets: ["codex", "vscode", "claude", "cursor", "antigravity", "gemini"], skills: [], clean: false };
+  const args = { out: "dist", targets: ["codex", "vscode", "claude", "cursor"], skills: [], clean: false };
   for (const a of argv) {
     if (a === "--help" || a === "-h") args.help = true;
     else if (a === "--clean") args.clean = true;

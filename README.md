@@ -85,6 +85,22 @@ node shared/scripts/skillpack-install.mjs --targets=cursor-global
 
 This installs skills to `~/.cursor/skills/` where Cursor will discover them.
 
+### Install globally for Antigravity
+
+```bash
+node shared/scripts/skillpack-install.mjs --targets=antigravity-global
+```
+
+This installs skills to `~/.agent/skills/` where Antigravity will discover them.
+
+### Install globally for Gemini CLI
+
+```bash
+node shared/scripts/skillpack-install.mjs --targets=gemini-global
+```
+
+This installs skills to `~/.gemini/skills/` where Gemini CLI will discover them.
+
 ### Available options
 
 ```bash

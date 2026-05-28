@@ -11,7 +11,7 @@ function usage() {
       "Options:",
       "  --dest=<path>       Destination repo root (required, unless using --global)",
       "  --from=<path>       Source directory (default: dist)",
-      "  --targets=<list>    Comma-separated targets: codex, vscode, claude, claude-global, cursor, cursor-global, antigravity, gemini (default: codex,vscode)",
+      "  --targets=<list>    Comma-separated targets: codex, vscode, claude, claude-global, cursor, cursor-global, antigravity, antigravity-global, gemini, gemini-global (default: codex,vscode)",
       "  --skills=<list>     Comma-separated skill names to install (default: all)",
       "  --mode=<mode>       'replace' (default) or 'merge'",
       "  --global            Shorthand for --targets=claude-global (installs to ~/.claude/skills)",
@@ -26,7 +26,9 @@ function usage() {
       "  cursor              Install to <dest>/.cursor/skills/",
       "  cursor-global       Install to ~/.cursor/skills/ (user-level, ignores --dest)",
       "  antigravity         Install to <dest>/.agent/skills/",
+      "  antigravity-global  Install to ~/.agent/skills/ (user-level, ignores --dest)",
       "  gemini              Install to <dest>/.gemini/skills/",
+      "  gemini-global       Install to ~/.gemini/skills/ (user-level, ignores --dest)",
       "",
       "Examples:",
       "  # Build and install to a WordPress project",
@@ -135,13 +137,22 @@ function listSkillDirs(skillsRoot) {
     .filter((d) => fs.existsSync(path.join(d, "SKILL.md")));
 }
 
-const VALID_TARGETS = ["codex", "vscode", "claude", "claude-global", "cursor", "cursor-global", "antigravity", "gemini"];
+const VALID_TARGETS = ["codex", "vscode", "claude", "claude-global", "cursor", "cursor-global", "antigravity", "antigravity-global", "gemini", "gemini-global"];
 
 // Map target to source subdirectory in dist
 function getSourceDir(fromDir, target) {
-  // claude-global uses the same source as claude; cursor-global uses the same as cursor
+  // claude-global uses the same source as claude; cursor-global uses the same as cursor;
+  // antigravity-global uses the same source as antigravity; gemini-global uses the same as gemini
   const sourceTarget =
-    target === "claude-global" ? "claude" : target === "cursor-global" ? "cursor" : target;
+    target === "claude-global"
+      ? "claude"
+      : target === "cursor-global"
+      ? "cursor"
+      : target === "antigravity-global"
+      ? "antigravity"
+      : target === "gemini-global"
+      ? "gemini"
+      : target;
   const targetDirMap = {
     codex: path.join(fromDir, "codex", ".codex", "skills"),
     vscode: path.join(fromDir, "vscode", ".github", "skills"),
@@ -155,12 +166,18 @@ function getSourceDir(fromDir, target) {
 
 // Map target to destination directory
 function getDestDir(destRepoRoot, target) {
-  // claude-global and cursor-global don't need destRepoRoot
+  // Global targets don't need destRepoRoot
   if (target === "claude-global") {
     return path.join(os.homedir(), ".claude", "skills");
   }
   if (target === "cursor-global") {
     return path.join(os.homedir(), ".cursor", "skills");
+  }
+  if (target === "antigravity-global") {
+    return path.join(os.homedir(), ".agent", "skills");
+  }
+  if (target === "gemini-global") {
+    return path.join(os.homedir(), ".gemini", "skills");
   }
 
   // Other targets require destRepoRoot
@@ -219,7 +236,11 @@ function installTarget({ fromDir, destRepoRoot, target, skillsFilter, mode, dryR
     copyDir({ srcDir: srcSkillDir, destDir: destSkillDir });
   }
 
-  const isGlobal = target === "claude-global" || target === "cursor-global";
+  const isGlobal =
+    target === "claude-global" ||
+    target === "cursor-global" ||
+    target === "antigravity-global" ||
+    target === "gemini-global";
   const location = isGlobal ? destSkillsRoot : path.relative(destRepoRoot, destSkillsRoot) || ".";
   process.stdout.write(`OK: installed ${skillDirs.length} skill(s) to ${location}\n`);
 }
@@ -264,8 +285,9 @@ function main() {
     assert(VALID_TARGETS.includes(t), `Invalid target: ${t}. Valid targets: ${VALID_TARGETS.join(", ")}`);
   }
 
-  // --dest is required unless only using global targets (claude-global, cursor-global)
-  const needsDest = targets.some((t) => t !== "claude-global" && t !== "cursor-global");
+  // --dest is required unless only using global targets
+  const globalTargets = new Set(["claude-global", "cursor-global", "antigravity-global", "gemini-global"]);
+  const needsDest = targets.some((t) => !globalTargets.has(t));
   if (needsDest && !args.dest) {
     process.stderr.write("Error: --dest is required for non-global targets.\n\n");
     usage();
