@@ -25,8 +25,8 @@ function usage() {
       "  claude-global       Install to ~/.claude/skills/ (user-level, ignores --dest)",
       "  cursor              Install to <dest>/.cursor/skills/",
       "  cursor-global       Install to ~/.cursor/skills/ (user-level, ignores --dest)",
-      "  antigravity         Install to <dest>/.agent/skills/",
-      "  antigravity-global  Install to ~/.agent/skills/ (user-level, ignores --dest)",
+      "  antigravity         Install to <dest>/.agents/skills/",
+      "  antigravity-global  Install to ~/.gemini/antigravity/skills/ (user-level, ignores --dest)",
       "",
       "Examples:",
       "  # Build and install to a WordPress project",
@@ -154,7 +154,7 @@ function getSourceDir(fromDir, target) {
     vscode: path.join(fromDir, "vscode", ".github", "skills"),
     claude: path.join(fromDir, "claude", ".claude", "skills"),
     cursor: path.join(fromDir, "cursor", ".cursor", "skills"),
-    antigravity: path.join(fromDir, "antigravity", ".agent", "skills"),
+    antigravity: path.join(fromDir, "antigravity", ".agents", "skills"),
   };
   return targetDirMap[sourceTarget];
 }
@@ -169,7 +169,7 @@ function getDestDir(destRepoRoot, target) {
     return path.join(os.homedir(), ".cursor", "skills");
   }
   if (target === "antigravity-global") {
-    return path.join(os.homedir(), ".agent", "skills");
+    return path.join(os.homedir(), ".gemini", "antigravity", "skills");
   }
 
   // Other targets require destRepoRoot
@@ -178,7 +178,7 @@ function getDestDir(destRepoRoot, target) {
     vscode: path.join(destRepoRoot, ".github", "skills"),
     claude: path.join(destRepoRoot, ".claude", "skills"),
     cursor: path.join(destRepoRoot, ".cursor", "skills"),
-    antigravity: path.join(destRepoRoot, ".agent", "skills"),
+    antigravity: path.join(destRepoRoot, ".agents", "skills"),
   };
   return destDirMap[target];
 }

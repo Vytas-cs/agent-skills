@@ -12,7 +12,7 @@ function usage() {
       "  - <out>/vscode/.github/skills/<skill>/SKILL.md",
       "  - <out>/claude/.claude/skills/<skill>/SKILL.md",
       "  - <out>/cursor/.cursor/skills/<skill>/SKILL.md",
-      "  - <out>/antigravity/.agent/skills/<skill>/SKILL.md",
+      "  - <out>/antigravity/.agents/skills/<skill>/SKILL.md",
       "",
       "Options:",
       "  --targets    Comma-separated list of targets (codex, vscode, claude, cursor; opt-in: antigravity). Default: codex,vscode,claude,cursor",
@@ -102,7 +102,7 @@ function buildTarget({ repoRoot, outDir, target, skillDirs }) {
     vscode: path.join(outDir, "vscode", ".github", "skills"),
     claude: path.join(outDir, "claude", ".claude", "skills"),
     cursor: path.join(outDir, "cursor", ".cursor", "skills"),
-    antigravity: path.join(outDir, "antigravity", ".agent", "skills"),
+    antigravity: path.join(outDir, "antigravity", ".agents", "skills"),
   };
   const destSkillsRoot = rootByTarget[target];
   assert(destSkillsRoot, `Unknown target: ${target}`);

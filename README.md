@@ -74,7 +74,7 @@ This copies skills into:
 - `.github/skills/` for VS Code / GitHub Copilot
 - `.claude/skills/` for Claude Code (project-level)
 - `.cursor/skills/` for Cursor (project-level)
-- `.agent/skills/` for Antigravity
+- `.agents/skills/` for Antigravity
 
 ### Install globally for Cursor
 
@@ -90,7 +90,7 @@ This installs skills to `~/.cursor/skills/` where Cursor will discover them.
 node shared/scripts/skillpack-install.mjs --targets=antigravity-global
 ```
 
-This installs skills to `~/.agent/skills/` where Antigravity will discover them.
+This installs skills to `~/.gemini/antigravity/skills/` where Antigravity will discover them.
 
 ### Available options
 
