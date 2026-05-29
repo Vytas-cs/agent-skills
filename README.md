@@ -68,7 +68,7 @@ You can use both at the same time. When a skill exists in both scopes, the proje
 
 ## Quick Start
 
-The fastest way to install skills is with a single command:
+The fastest way to install a skill is with a single command:
 
 ```bash
 npx skills add WordPress/agent-skills --skill wp-plugin-development
