@@ -86,6 +86,16 @@ To install multiple skills at once:
 npx skills add WordPress/agent-skills --skill wp-plugin-development wp-abilities-api wp-playground
 ```
 
+#### Choosing a scope
+
+`npx skills add` asks to choose the skill **project-scoped**, selecting the local scope on which the skills are installed in the local project; it can be stored at the repository (e.g. `.claude/skills/`, `.cursor/skills/`) — so the skills can be committed to version control and shared with your team.
+
+Installing **globally** makes the skill available to your user (across **all** your projects). Adding the `-g` / `--global` flag, it will install your skill with global scope:
+
+```bash
+npx skills add WordPress/agent-skills --skill wp-plugin-development --global
+```
+
 ### Install globally for Claude Code
 
 ```bash
