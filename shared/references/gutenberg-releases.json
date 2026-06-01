@@ -1,12 +1,30 @@
 {
   "source": "https://api.github.com/repos/WordPress/gutenberg/releases?per_page=50",
   "latest": {
-    "tag": "v23.1.1",
-    "name": "23.1.1",
-    "publishedAt": "2026-05-08T14:28:37Z",
-    "url": "https://github.com/WordPress/gutenberg/releases/tag/v23.1.1"
+    "tag": "v23.2.2",
+    "name": "23.2.2",
+    "publishedAt": "2026-05-22T01:12:46Z",
+    "url": "https://github.com/WordPress/gutenberg/releases/tag/v23.2.2"
   },
   "recent": [
+    {
+      "tag": "v23.2.2",
+      "name": "23.2.2",
+      "publishedAt": "2026-05-22T01:12:46Z",
+      "url": "https://github.com/WordPress/gutenberg/releases/tag/v23.2.2"
+    },
+    {
+      "tag": "v23.2.1",
+      "name": "23.2.1",
+      "publishedAt": "2026-05-20T22:30:49Z",
+      "url": "https://github.com/WordPress/gutenberg/releases/tag/v23.2.1"
+    },
+    {
+      "tag": "v23.2.0",
+      "name": "23.2.0",
+      "publishedAt": "2026-05-20T14:34:14Z",
+      "url": "https://github.com/WordPress/gutenberg/releases/tag/v23.2.0"
+    },
     {
       "tag": "v23.1.1",
       "name": "23.1.1",
@@ -168,18 +186,6 @@
       "name": "21.9.0",
       "publishedAt": "2025-10-22T14:56:49Z",
       "url": "https://github.com/WordPress/gutenberg/releases/tag/v21.9.0"
-    },
-    {
-      "tag": "v21.8.2",
-      "name": "21.8.2",
-      "publishedAt": "2025-10-16T11:30:44Z",
-      "url": "https://github.com/WordPress/gutenberg/releases/tag/v21.8.2"
-    },
-    {
-      "tag": "v21.8.1",
-      "name": "21.8.1",
-      "publishedAt": "2025-10-14T18:04:28Z",
-      "url": "https://github.com/WordPress/gutenberg/releases/tag/v21.8.1"
     }
   ]
 }
