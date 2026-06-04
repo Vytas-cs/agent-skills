@@ -80,20 +80,14 @@ define( 'DISALLOW_FILE_MODS', true );  // also stops plugin/theme installs from 
 
 PHP files should never execute from `wp-content/uploads/`. Add this `.htaccess` inside `wp-content/uploads/`:
 
+```apache
+# Apache 2.4+ syntax
+<FilesMatch "\.(php|phtml|phar|php3|php4|php5|php7|pht)$">
+  Require all denied
+</FilesMatch>
 ```
-<Files "*.php">
-  Order Deny,Allow
-  Deny from all
-</Files>
-<Files "*.phtml">
-  Order Deny,Allow
-  Deny from all
-</Files>
-<Files "*.phar">
-  Order Deny,Allow
-  Deny from all
-</Files>
-```
+
+(The older `Order Deny,Allow` / `Deny from all` syntax from `mod_access_compat` is deprecated since Apache 2.4 and silently does nothing on servers without the compat module loaded.)
 
 For nginx (in server block):
 
@@ -108,7 +102,7 @@ location ~* /wp-content/uploads/.*\.(php|phtml|phar)$ {
 Standard recommended permissions:
 - Files: 644 (`-rw-r--r--`)
 - Directories: 755 (`drwxr-xr-x`)
-- `wp-config.php`: 440 (`-rw-------`)
+- `wp-config.php`: 440 (`-r--r-----`) or 400 (`-r--------`) — see note below
 
 Recursive set:
 
@@ -132,20 +126,25 @@ Options -Indexes
 autoindex off;
 ```
 
-### Restrict the WordPress database user's privileges
+### Restrict the WordPress database user's privileges (with a real caveat)
 
-After install, WordPress only needs `SELECT`, `INSERT`, `UPDATE`, `DELETE` on its own database for day-to-day operation. `CREATE`, `ALTER`, `DROP` are only needed during plugin/theme installs and core upgrades.
-
-Per the [WordPress.org hardening guide](https://developer.wordpress.org/advanced-administration/security/hardening/), the practical pattern: create a separate admin DB user for upgrade-time use, and run the site under a restricted user the rest of the time. A compromise that gets DB access via the runtime user then cannot `DROP TABLE` or create new ones.
+Per the [WordPress.org hardening guide](https://developer.wordpress.org/advanced-administration/security/hardening/), one model is: a restricted runtime DB user (SELECT/INSERT/UPDATE/DELETE only) for day-to-day operation, plus a privileged admin DB user used only for upgrades. A compromise that gets DB access via the runtime user then cannot `DROP TABLE` or create new ones.
 
 ```sql
--- Restricted runtime user (example)
+-- Restricted runtime user
 GRANT SELECT, INSERT, UPDATE, DELETE ON wp_database.* TO 'wp_runtime'@'localhost';
--- Privileged user used only for core/plugin/theme upgrades
+-- Privileged user, used only for core/plugin/theme installs and upgrades
 GRANT ALL PRIVILEGES ON wp_database.* TO 'wp_admin'@'localhost';
 ```
 
-Swap in `wp_admin` for the upgrade flow, then swap back to `wp_runtime` once done.
+**Important caveat:** many WordPress plugins call `dbDelta()` to create or alter tables not only at activation but also during routine operation (cache invalidation, schema migrations on plugin update, on-demand table creation, etc.). Running long-term under a `SELECT/INSERT/UPDATE/DELETE`-only user will silently break those plugins — often with subtle errors that are hard to diagnose.
+
+If you adopt this model:
+- Test thoroughly on a staging copy first with every plugin you actually use.
+- Watch error logs for `CREATE TABLE` / `ALTER TABLE` failures after plugin updates.
+- Be ready to grant `CREATE`/`ALTER`/`INDEX` temporarily when a plugin needs schema work.
+
+The cleaner alternative for most sites: use the standard WP DB user with full privileges on its own database, and instead invest in keeping the runtime *environment* secure (file permissions, WAF, 2FA, vuln scanning).
 
 ### HTTP basic auth in front of `/wp-admin/`
 
@@ -235,10 +234,15 @@ Run a supported PHP version (currently 8.1+; minimum acceptable is whatever has 
 If your host allows custom `php.ini` or `.user.ini`, disable functions WP doesn't legitimately need:
 
 ```ini
-disable_functions = exec,passthru,shell_exec,system,proc_open,popen,curl_multi_exec,parse_ini_file,show_source
+disable_functions = exec,passthru,shell_exec,system,proc_open,popen,show_source
 ```
 
-Some legitimate plugins use `exec` / `shell_exec` (e.g. ImageMagick wrappers). Test before enforcing.
+Caveats — DO NOT blindly include these even though some hardening guides list them:
+- `curl_multi_exec` — used by legitimate plugins that fetch from multiple URLs in parallel (page builders, analytics, social integrations).
+- `parse_ini_file` — used by some plugins for config loading.
+- `exec` / `shell_exec` — some plugins legitimately need these (ImageMagick wrappers, backup plugins that shell out to `mysqldump`).
+
+Test on staging first. The list above is a reasonable default but should be tuned to your actual plugin set.
 
 ### Web Application Firewall
 

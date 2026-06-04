@@ -41,8 +41,8 @@ This skill is response-focused. Upfront prevention (without an active incident) 
 - If actively serving malware/phishing to visitors: take site offline (maintenance plugin, `.htaccess` deny-all, or have the host suspend serving while preserving files).
 - If only suspected, no live harm: leave up, plan to act within hours.
 - Take a file snapshot (compressed tar) and a DB dump for evidence. Store offline.
-- **Rotate WP secret keys/salts now** — generate new at https://api.wordpress.org/secret-key/1.1/salt/ and replace in `wp-config.php`. This invalidates every existing session (including the attacker's), but does NOT trigger password-change emails or otherwise tip off the attacker.
-- **Defer full password rotation until after step 5** — backdoors will silently re-establish access if you rotate credentials before cleanup. WordPress.org's [hacked-site FAQ](https://wordpress.org/documentation/article/faq-my-site-was-hacked/) recommends an initial reset-and-rotate-again approach; this skill prefers the salts-only initial rotation because it kills sessions without warning the attacker, then a full credential rotation after cleanup (step 5). Pick the path that matches the situation — if you cannot complete investigation + cleanup within hours, do a full password reset now and another after cleanup.
+- **Rotate WP secret keys/salts now** — generate new at https://api.wordpress.org/secret-key/1.1/salt/ and replace in `wp-config.php`. This invalidates every existing session (including the attacker's) and does not send password-change emails. The attacker WILL notice their session was killed (it's an observable signal) and may try to re-establish access via any backdoor they planted — that's why this is paired with steps 2–7, not a standalone fix.
+- **Defer full password rotation until after step 5** — backdoors will silently re-establish credential access if you rotate before cleanup. WordPress.org's [hacked-site FAQ](https://wordpress.org/documentation/article/faq-my-site-was-hacked/) recommends an initial reset-and-rotate-again approach; this skill prefers the salts-only initial rotation because it doesn't blast password-change emails to thousands of customer accounts on a WooCommerce/membership site. Pick the path that matches the situation — if you cannot complete investigation + cleanup within hours, also reset admin/editor passwords now and again after cleanup.
 
 ### 2) Classify the compromise type
 
@@ -112,7 +112,23 @@ Two paths. Prefer (a) when available.
 
 (Salts were already rotated in step 1. This is the full credential pass.)
 
-In order: WP admin passwords (`wp user reset-password $(wp user list --format=ids)`) → DB user password → WP secret keys/salts (rotate again — new from https://api.wordpress.org/secret-key/1.1/salt/) → hosting credentials → SSH `authorized_keys` audit → API keys (Akismet, payment gateway, mail) → 2FA on every admin.
+In order:
+
+1. **Privileged WP users only** (NOT customers/subscribers/everyone). Default `wp user reset-password` emails every targeted user a reset link — on a WooCommerce or membership site this would blast thousands of emails to customers and to any attacker-controlled account. Scope tightly and skip the email blast:
+   ```bash
+   wp user reset-password \
+       $(wp user list --role=administrator,editor --format=ids) \
+       --skip-email
+   ```
+   Then notify the legitimate admins/editors out-of-band (Slack, in-person, separate email account) with new credentials.
+2. DB user password (and update `wp-config.php`).
+3. WP secret keys / salts — rotate **again** even if you rotated in step 1 (new at https://api.wordpress.org/secret-key/1.1/salt/).
+4. Hosting credentials (cPanel / dashboard, SFTP, SSH).
+5. SSH `authorized_keys` audit — remove unfamiliar keys.
+6. API keys (Akismet, payment gateway, transactional mail, anything connected).
+7. 2FA on every admin.
+
+For non-admin users (subscribers/customers), prefer "force re-login + invalidate sessions" over a mass password reset. The salts rotation in step 1 already invalidates their sessions.
 
 Per the [WordPress.org hacked-site FAQ](https://wordpress.org/documentation/article/faq-my-site-was-hacked/), salts and passwords should be rotated **again** after cleanup — even if you rotated already in step 1 — because the cleanup may have introduced changes you'd want to confirm don't include lingering compromise paths.
 
