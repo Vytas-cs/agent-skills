@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 
+const TOOL_HEADER = { name: "detect_compromise_signals", version: 1 };
+
 const DEFAULT_IGNORES = new Set([
   ".git",
   "node_modules",
@@ -24,11 +26,11 @@ const SUSPICIOUS_PHP_EXTS = new Set([
 ]);
 
 const MALWARE_PATTERNS = [
-  { name: "eval_gzinflate_base64", regex: /eval\s*\(\s*gzinflate\s*\(\s*base64_decode/i },
-  { name: "eval_base64_decode",    regex: /eval\s*\(\s*base64_decode/i },
-  { name: "eval_request_param",    regex: /eval\s*\(\s*\$_(POST|GET|REQUEST|COOKIE|SERVER)/i },
-  { name: "assert_request_param",  regex: /assert\s*\(\s*\$_(POST|GET|REQUEST|COOKIE)/i },
-  { name: "exec_request_param",    regex: /(system|shell_exec|passthru|exec|popen|proc_open)\s*\(\s*\$_/i },
+  { name: "eval_gzinflate_base64",   regex: /eval\s*\(\s*gzinflate\s*\(\s*base64_decode/i },
+  { name: "eval_base64_decode",      regex: /eval\s*\(\s*base64_decode/i },
+  { name: "eval_request_param",      regex: /eval\s*\(\s*\$_(POST|GET|REQUEST|COOKIE|SERVER)/i },
+  { name: "assert_request_param",    regex: /assert\s*\(\s*\$_(POST|GET|REQUEST|COOKIE)/i },
+  { name: "exec_request_param",      regex: /(system|shell_exec|passthru|exec|popen|proc_open)\s*\(\s*\$_/i },
   { name: "preg_replace_e_modifier", regex: /preg_replace\s*\(\s*['"][^'"]*\/e['"]/i },
 ];
 
@@ -51,174 +53,149 @@ const WP_FLAVORED_DIR_BAIT = [
 ];
 
 function statSafe(p) {
-  try {
-    return fs.statSync(p);
-  } catch {
-    return null;
-  }
+  try { return fs.statSync(p); } catch { return null; }
 }
 
 function readFileSafe(p, maxBytes = 128 * 1024) {
   try {
     const buf = fs.readFileSync(p);
-    if (buf.byteLength > maxBytes) return buf.subarray(0, maxBytes).toString("utf8");
-    return buf.toString("utf8");
+    return buf.byteLength > maxBytes ? buf.subarray(0, maxBytes).toString("utf8") : buf.toString("utf8");
   } catch {
     return null;
   }
 }
 
+// Walks rootDir breadth-first. Returns { files, truncated, depthCapped } so
+// callers can distinguish "no matches" from "scan hit a cap" — important for
+// a malware scanner where the second must NOT read as clean.
 function findFilesRecursive(rootDir, predicate, { maxFiles = 6000, maxDepth = 12 } = {}) {
-  const results = [];
+  const files = [];
   const queue = [{ dir: rootDir, depth: 0 }];
   let truncated = false;
   let depthCapped = false;
 
-  while (queue.length > 0 && results.length < maxFiles) {
+  outer:
+  while (queue.length > 0) {
     const { dir, depth } = queue.shift();
     if (depth > maxDepth) { depthCapped = true; continue; }
 
     let entries;
-    try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch {
-      continue;
-    }
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
 
     for (const ent of entries) {
       const fullPath = path.join(dir, ent.name);
-
       if (ent.isDirectory()) {
         if (DEFAULT_IGNORES.has(ent.name)) continue;
         queue.push({ dir: fullPath, depth: depth + 1 });
-      } else if (ent.isFile()) {
-        if (predicate(ent.name, fullPath)) {
-          results.push(fullPath);
-          if (results.length >= maxFiles) {
-            truncated = true;
-            break;
-          }
-        }
+      } else if (ent.isFile() && predicate(ent.name, fullPath)) {
+        files.push(fullPath);
+        if (files.length >= maxFiles) { truncated = true; break outer; }
       }
     }
   }
 
-  if (queue.length > 0 && results.length >= maxFiles) truncated = true;
-
-  results.truncated = truncated;
-  results.depthCapped = depthCapped;
-  return results;
+  return { files, truncated, depthCapped };
 }
 
 function detectWpRoot(repoRoot) {
-  const candidates = [
-    repoRoot,
-    path.join(repoRoot, "wordpress"),
-    path.join(repoRoot, "wp"),
-    path.join(repoRoot, "public"),
-    path.join(repoRoot, "public_html"),
-  ];
-  for (const c of candidates) {
-    if (statSafe(path.join(c, "wp-includes"))) return c;
+  for (const sub of ["", "wordpress", "wp", "public", "public_html"]) {
+    const candidate = sub ? path.join(repoRoot, sub) : repoRoot;
+    if (statSafe(path.join(candidate, "wp-includes"))) return candidate;
   }
   return null;
 }
 
+function listDirSafe(dir, { onlyDirs = false } = {}) {
+  try {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    return onlyDirs ? entries.filter((e) => e.isDirectory()) : entries;
+  } catch {
+    return [];
+  }
+}
+
 function scanPhpInUploads(wpRoot) {
   const uploadsDir = path.join(wpRoot, "wp-content", "uploads");
-  if (!statSafe(uploadsDir)) return [];
-  return findFilesRecursive(uploadsDir, (name) => {
-    const ext = path.extname(name).toLowerCase();
-    return SUSPICIOUS_PHP_EXTS.has(ext);
-  }, { maxFiles: 500 });
+  if (!statSafe(uploadsDir)) return { files: [], truncated: false, depthCapped: false };
+  return findFilesRecursive(
+    uploadsDir,
+    (name) => SUSPICIOUS_PHP_EXTS.has(path.extname(name).toLowerCase()),
+    { maxFiles: 500 }
+  );
 }
 
 function scanMuPlugins(wpRoot) {
   const muDir = path.join(wpRoot, "wp-content", "mu-plugins");
   if (!statSafe(muDir)) return { exists: false, entries: [] };
-  let entries = [];
-  try {
-    entries = fs.readdirSync(muDir);
-  } catch {
-    return { exists: true, entries: [] };
-  }
-  return { exists: true, entries };
+  return { exists: true, entries: listDirSafe(muDir).map((e) => e.name) };
 }
 
+// Drop-ins live directly in wp-content/ (no wp-content/drop-ins/ subdirectory
+// exists in stock WP). Reference: https://developer.wordpress.org/reference/functions/_get_dropins/
+const KNOWN_DROP_INS = new Set([
+  "advanced-cache.php",
+  "db.php",
+  "db-error.php",
+  "install.php",
+  "maintenance.php",
+  "object-cache.php",
+  "php-error.php",
+  "fatal-error-handler.php",
+  // Multisite-only
+  "sunrise.php",
+  "blog-deleted.php",
+  "blog-inactive.php",
+  "blog-suspended.php",
+]);
+
 function scanDropIns(wpRoot) {
-  // Drop-ins live directly in wp-content/ (no wp-content/drop-ins/ subdirectory exists in stock WP).
-  // Reference: https://developer.wordpress.org/reference/functions/_get_dropins/
-  const wpContent = path.join(wpRoot, "wp-content");
-  const knownDropIns = new Set([
-    "advanced-cache.php",
-    "db.php",
-    "db-error.php",
-    "install.php",
-    "maintenance.php",
-    "object-cache.php",
-    "php-error.php",
-    "fatal-error-handler.php",
-    // Multisite-only
-    "sunrise.php",
-    "blog-deleted.php",
-    "blog-inactive.php",
-    "blog-suspended.php",
-  ]);
-  let present = [];
-  try {
-    const wpContentEntries = fs.readdirSync(wpContent);
-    present = wpContentEntries.filter((n) => knownDropIns.has(n));
-  } catch {
-    // ignore
-  }
-  return { present };
+  return {
+    present: listDirSafe(path.join(wpRoot, "wp-content"))
+      .map((e) => e.name)
+      .filter((n) => KNOWN_DROP_INS.has(n)),
+  };
 }
 
 function scanWpFlavoredBaitDirs(wpRoot) {
   const pluginsDir = path.join(wpRoot, "wp-content", "plugins");
   if (!statSafe(pluginsDir)) return [];
-  let entries = [];
-  try {
-    entries = fs.readdirSync(pluginsDir, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-  return entries
-    .filter((e) => e.isDirectory())
+  return listDirSafe(pluginsDir, { onlyDirs: true })
     .filter((e) => WP_FLAVORED_DIR_BAIT.some((rx) => rx.test(e.name)))
     .map((e) => e.name);
 }
 
 function scanKnownMalwareFilenames(wpRoot) {
-  return findFilesRecursive(wpRoot, (name) => KNOWN_MALWARE_FILENAMES.has(name.toLowerCase()), { maxFiles: 50 });
+  return findFilesRecursive(
+    wpRoot,
+    (name) => KNOWN_MALWARE_FILENAMES.has(name.toLowerCase()),
+    { maxFiles: 50 }
+  );
 }
 
 function scanMalwarePatterns(wpRoot, { maxFilesScanned = 4000, maxFileBytes = 256 * 1024 } = {}) {
-  const hits = [];
-  const phpFiles = findFilesRecursive(
+  const walk = findFilesRecursive(
     wpRoot,
     (name) => SUSPICIOUS_PHP_EXTS.has(path.extname(name).toLowerCase()),
     { maxFiles: maxFilesScanned }
   );
 
+  const hits = [];
   let filesReadTruncated = 0;
-  for (const file of phpFiles) {
+  for (const file of walk.files) {
     const st = statSafe(file);
     if (st && st.size > maxFileBytes) filesReadTruncated += 1;
     const content = readFileSafe(file, maxFileBytes);
     if (!content) continue;
     for (const pattern of MALWARE_PATTERNS) {
-      if (pattern.regex.test(content)) {
-        hits.push({ file, pattern: pattern.name });
-      }
+      if (pattern.regex.test(content)) hits.push({ file, pattern: pattern.name });
     }
   }
 
   return {
-    filesScanned: phpFiles.length,
+    filesScanned: walk.files.length,
     hits,
-    fileListTruncated: phpFiles.truncated === true,
-    depthCapped: phpFiles.depthCapped === true,
+    fileListTruncated: walk.truncated,
+    depthCapped: walk.depthCapped,
     filesReadTruncated,  // count of files where only the first maxFileBytes were scanned
     maxFilesScanned,
     maxFileBytes,
@@ -227,20 +204,14 @@ function scanMalwarePatterns(wpRoot, { maxFilesScanned = 4000, maxFileBytes = 25
 
 function scanRecentCoreModifications(wpRoot, days = 30) {
   const cutoffMs = Date.now() - days * 24 * 60 * 60 * 1000;
-  const coreDirs = ["wp-admin", "wp-includes"].map((d) => path.join(wpRoot, d));
   const recent = [];
-  for (const dir of coreDirs) {
+  for (const sub of ["wp-admin", "wp-includes"]) {
+    const dir = path.join(wpRoot, sub);
     if (!statSafe(dir)) continue;
-    const files = findFilesRecursive(
-      dir,
-      (name) => name.endsWith(".php"),
-      { maxFiles: 5000 }
-    );
-    for (const f of files) {
+    const walk = findFilesRecursive(dir, (name) => name.endsWith(".php"), { maxFiles: 5000 });
+    for (const f of walk.files) {
       const st = statSafe(f);
-      if (st && st.mtimeMs > cutoffMs) {
-        recent.push({ file: f, mtime: new Date(st.mtimeMs).toISOString() });
-      }
+      if (st && st.mtimeMs > cutoffMs) recent.push({ file: f, mtime: new Date(st.mtimeMs).toISOString() });
     }
   }
   return recent;
@@ -249,64 +220,46 @@ function scanRecentCoreModifications(wpRoot, days = 30) {
 // ---------------------------------------------------------------------------
 // Vulnerability lookup (optional, only when --check-vulns is passed)
 // ---------------------------------------------------------------------------
-//
-// Queries the wpvulnerability.com API (free, no API key required). The service
-// aggregates vulnerability data from WPScan, Patchstack, and WP.org sources.
-// Reference: https://www.wpvulnerability.com/
-//
-// Swappable: if you'd rather use WPScan or Patchstack directly, replace the
-// VULN_API_BASE constant and the response-shape adapters below.
+// Queries wpvulnerability.com (free, no API key). The service aggregates
+// vulnerability data from WPScan, Patchstack, and WP.org sources.
+// Swappable: replace VULN_API_BASE + flattenVulnRecords to use a different source.
 
 const VULN_API_BASE = "https://www.wpvulnerability.com/api/v3";
 const VULN_FETCH_TIMEOUT_MS = 5000;
 const VULN_CONCURRENCY = 5;
 
 function detectWpCoreVersion(wpRoot) {
-  const versionFile = path.join(wpRoot, "wp-includes", "version.php");
-  const content = readFileSafe(versionFile);
-  if (!content) return null;
-  const m = content.match(/\$wp_version\s*=\s*['"]([^'"]+)['"]/);
+  const content = readFileSafe(path.join(wpRoot, "wp-includes", "version.php"));
+  const m = content?.match(/\$wp_version\s*=\s*['"]([^'"]+)['"]/);
   return m ? m[1] : null;
 }
 
-function parseWpPluginHeader(filePath) {
-  const content = readFileSafe(filePath, 16 * 1024);
+// Parses Plugin Name/Version OR Theme Name/Version from a header block.
+// Plugin headers live in <slug>.php (PHP comment); theme headers in style.css (CSS comment).
+function parseWpHeader(filePath, kind, maxBytes = 16 * 1024) {
+  const content = readFileSafe(filePath, maxBytes);
   if (!content) return null;
-  const nameMatch = content.match(/^[\s*]*Plugin Name:\s*(.+)$/im);
+  const nameRegex = new RegExp(String.raw`^[\s/*]*${kind} Name:\s*(.+)$`, "im");
+  const nameMatch = content.match(nameRegex);
   if (!nameMatch) return null;
-  const versionMatch = content.match(/^[\s*]*Version:\s*(.+)$/im);
-  return {
-    name: nameMatch[1].trim(),
-    version: versionMatch ? versionMatch[1].trim() : null,
-  };
+  const versionMatch = content.match(/^[\s/*]*Version:\s*(.+)$/im);
+  return { name: nameMatch[1].trim(), version: versionMatch ? versionMatch[1].trim() : null };
 }
 
 function detectInstalledPlugins(wpRoot) {
   const pluginsDir = path.join(wpRoot, "wp-content", "plugins");
   if (!statSafe(pluginsDir)) return [];
   const plugins = [];
-  let entries;
-  try {
-    entries = fs.readdirSync(pluginsDir, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-  for (const ent of entries) {
-    if (!ent.isDirectory()) continue;
+  for (const ent of listDirSafe(pluginsDir, { onlyDirs: true })) {
     const slug = ent.name;
     const pluginDir = path.join(pluginsDir, slug);
-    // The main plugin file is usually <slug>.php; fall back to scanning .php files in the root
-    const candidates = [path.join(pluginDir, `${slug}.php`)];
-    try {
-      const dirEntries = fs.readdirSync(pluginDir);
-      for (const f of dirEntries) {
-        if (f.endsWith(".php") && !candidates.includes(path.join(pluginDir, f))) {
-          candidates.push(path.join(pluginDir, f));
-        }
-      }
-    } catch { /* ignore */ }
-    for (const candidate of candidates) {
-      const header = parseWpPluginHeader(candidate);
+    // Try <slug>.php first (the common case), then any other .php at the dir root.
+    const phpFiles = listDirSafe(pluginDir)
+      .filter((e) => e.isFile && e.isFile() && e.name.endsWith(".php"))
+      .map((e) => path.join(pluginDir, e.name))
+      .sort((a) => (path.basename(a) === `${slug}.php` ? -1 : 1));
+    for (const candidate of phpFiles) {
+      const header = parseWpHeader(candidate, "Plugin");
       if (header) {
         plugins.push({ slug, name: header.name, version: header.version });
         break;
@@ -316,36 +269,14 @@ function detectInstalledPlugins(wpRoot) {
   return plugins;
 }
 
-function parseWpThemeHeader(styleCssPath) {
-  const content = readFileSafe(styleCssPath, 8 * 1024);
-  if (!content) return null;
-  const nameMatch = content.match(/^[\s\/*]*Theme Name:\s*(.+)$/im);
-  if (!nameMatch) return null;
-  const versionMatch = content.match(/^[\s\/*]*Version:\s*(.+)$/im);
-  return {
-    name: nameMatch[1].trim(),
-    version: versionMatch ? versionMatch[1].trim() : null,
-  };
-}
-
 function detectInstalledThemes(wpRoot) {
   const themesDir = path.join(wpRoot, "wp-content", "themes");
   if (!statSafe(themesDir)) return [];
   const themes = [];
-  let entries;
-  try {
-    entries = fs.readdirSync(themesDir, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-  for (const ent of entries) {
-    if (!ent.isDirectory()) continue;
+  for (const ent of listDirSafe(themesDir, { onlyDirs: true })) {
     const slug = ent.name;
-    const styleCss = path.join(themesDir, slug, "style.css");
-    const header = parseWpThemeHeader(styleCss);
-    if (header) {
-      themes.push({ slug, name: header.name, version: header.version });
-    }
+    const header = parseWpHeader(path.join(themesDir, slug, "style.css"), "Theme", 8 * 1024);
+    if (header) themes.push({ slug, name: header.name, version: header.version });
   }
   return themes;
 }
@@ -356,8 +287,7 @@ async function fetchJsonWithTimeout(url, timeoutMs = VULN_FETCH_TIMEOUT_MS) {
   try {
     const res = await fetch(url, { signal: controller.signal, headers: { "User-Agent": "wp-abuse-detect-script/1" } });
     if (!res.ok) return { error: `HTTP ${res.status}`, url };
-    const data = await res.json();
-    return { data, url };
+    return { data: await res.json(), url };
   } catch (e) {
     return { error: String(e?.message || e), url };
   } finally {
@@ -365,8 +295,10 @@ async function fetchJsonWithTimeout(url, timeoutMs = VULN_FETCH_TIMEOUT_MS) {
   }
 }
 
+// Returns negative / 0 / positive for a<b / a=b / a>b on dot-separated numeric versions.
+// Pre-release suffixes (e.g. "1.2.3-beta") are treated as equal to the base "1.2.3" —
+// fine for matching vuln-record version constraints, which use numeric thresholds.
 function compareVersions(a, b) {
-  // Returns negative if a<b, 0 if equal, positive if a>b. Handles X.Y.Z and pre-release suffixes loosely.
   const pa = String(a).split(/[.+-]/).map((p) => parseInt(p, 10));
   const pb = String(b).split(/[.+-]/).map((p) => parseInt(p, 10));
   const len = Math.max(pa.length, pb.length);
@@ -378,21 +310,23 @@ function compareVersions(a, b) {
   return 0;
 }
 
+const OPERATOR_PREDICATES = {
+  "<=": (cmp) => cmp <= 0,
+  "<":  (cmp) => cmp < 0,
+  "=":  (cmp) => cmp === 0,
+  ">=": (cmp) => cmp >= 0,
+  ">":  (cmp) => cmp > 0,
+};
+
 function vulnAffectsInstalledVersion(vuln, installedVersion) {
   if (!installedVersion) return { affected: null, reason: "version_unknown" };
-  // wpvulnerability.com vuln records vary in shape; check operator-style fields, fallback to "patched_in"
-  const ops = vuln?.operator || vuln?.affected || null;
+  // wpvulnerability.com vuln records vary in shape; check operator-style fields, fallback to "patched_in".
+  const ops = vuln?.operator || vuln?.affected;
   if (Array.isArray(ops)) {
     for (const op of ops) {
-      const v = op?.version;
-      const operator = op?.operator;
-      if (!v || !operator) continue;
-      const cmp = compareVersions(installedVersion, v);
-      if (operator === "<=" && cmp <= 0) return { affected: true };
-      if (operator === "<" && cmp < 0) return { affected: true };
-      if (operator === "=" && cmp === 0) return { affected: true };
-      if (operator === ">=" && cmp >= 0) return { affected: true };
-      if (operator === ">" && cmp > 0) return { affected: true };
+      const predicate = OPERATOR_PREDICATES[op?.operator];
+      if (!op?.version || !predicate) continue;
+      if (predicate(compareVersions(installedVersion, op.version))) return { affected: true };
     }
     return { affected: false };
   }
@@ -402,13 +336,13 @@ function vulnAffectsInstalledVersion(vuln, installedVersion) {
 }
 
 function flattenVulnRecords(apiResult, installedVersion) {
-  // wpvulnerability.com response shape varies; this code is best-effort and may need adjustment.
-  if (!apiResult?.data) return { error: apiResult?.error, vulns: [], unknown_match: [] };
+  if (!apiResult?.data) return { error: apiResult?.error || null, vulns: [], unknown_match: [] };
   const candidates = apiResult.data?.vulnerabilities || apiResult.data?.vulns || [];
-  const matched = [];
-  const unknownMatch = [];  // records where we couldn't determine if the installed version is affected
+  const vulns = [];
+  const unknown_match = [];
   for (const v of candidates) {
     const { affected, reason } = vulnAffectsInstalledVersion(v, installedVersion);
+    if (affected === false) continue;
     const record = {
       id: v.id || v.cve || v.title?.slice(0, 40) || "unknown",
       title: v.title || v.summary || null,
@@ -418,13 +352,10 @@ function flattenVulnRecords(apiResult, installedVersion) {
       patched_in: v.patched_in || v.fixed_in || null,
       url: v.source_url || v.url || null,
     };
-    if (affected === true) {
-      matched.push(record);
-    } else if (affected === null) {
-      unknownMatch.push({ ...record, match_uncertainty_reason: reason });
-    }
+    if (affected === true) vulns.push(record);
+    else unknown_match.push({ ...record, match_uncertainty_reason: reason });
   }
-  return { vulns: matched, unknown_match: unknownMatch };
+  return { vulns, unknown_match, error: null };
 }
 
 async function runWithConcurrency(items, worker, concurrency = VULN_CONCURRENCY) {
@@ -440,6 +371,19 @@ async function runWithConcurrency(items, worker, concurrency = VULN_CONCURRENCY)
   return results;
 }
 
+async function lookupComponentVulns(kind /* "plugin" | "theme" */, comp) {
+  const apiResult = await fetchJsonWithTimeout(`${VULN_API_BASE}/${kind}/${encodeURIComponent(comp.slug)}`);
+  const { vulns, unknown_match, error } = flattenVulnRecords(apiResult, comp.version);
+  return {
+    slug: comp.slug,
+    name: comp.name,
+    installed_version: comp.version,
+    vulnerabilities: vulns,
+    vulnerabilities_uncertain_match: unknown_match,
+    fetch_error: error || apiResult?.error || null,
+  };
+}
+
 async function checkVulnerabilities(wpRoot) {
   const wpVersion = detectWpCoreVersion(wpRoot);
   const plugins = detectInstalledPlugins(wpRoot);
@@ -449,41 +393,19 @@ async function checkVulnerabilities(wpRoot) {
     ? fetchJsonWithTimeout(`${VULN_API_BASE}/wordpress/${encodeURIComponent(wpVersion)}`)
     : Promise.resolve({ error: "wp version not detected" });
 
-  const pluginResults = await runWithConcurrency(plugins, async (p) => {
-    const apiResult = await fetchJsonWithTimeout(`${VULN_API_BASE}/plugin/${encodeURIComponent(p.slug)}`);
-    const { vulns, unknown_match, error } = flattenVulnRecords(apiResult, p.version);
-    return {
-      slug: p.slug,
-      name: p.name,
-      installed_version: p.version,
-      vulnerabilities: vulns,
-      vulnerabilities_uncertain_match: unknown_match,
-      fetch_error: error || apiResult?.error,
-    };
-  });
+  const [pluginResults, themeResults, coreApi] = await Promise.all([
+    runWithConcurrency(plugins, (p) => lookupComponentVulns("plugin", p)),
+    runWithConcurrency(themes,  (t) => lookupComponentVulns("theme", t)),
+    corePromise,
+  ]);
 
-  const themeResults = await runWithConcurrency(themes, async (t) => {
-    const apiResult = await fetchJsonWithTimeout(`${VULN_API_BASE}/theme/${encodeURIComponent(t.slug)}`);
-    const { vulns, unknown_match, error } = flattenVulnRecords(apiResult, t.version);
-    return {
-      slug: t.slug,
-      name: t.name,
-      installed_version: t.version,
-      vulnerabilities: vulns,
-      vulnerabilities_uncertain_match: unknown_match,
-      fetch_error: error || apiResult?.error,
-    };
-  });
-
-  const coreApi = await corePromise;
-  const core = wpVersion ? flattenVulnRecords(coreApi, wpVersion) : { vulns: [], unknown_match: [] };
-
+  const core = wpVersion ? flattenVulnRecords(coreApi, wpVersion) : { vulns: [], unknown_match: [], error: null };
   const pluginsWithVulns = pluginResults.filter((p) => p.vulnerabilities.length > 0);
   const themesWithVulns = themeResults.filter((t) => t.vulnerabilities.length > 0);
 
   return {
     experimental: true,
-    privacy_note: "This check sends a list of your installed plugin/theme slugs (not versions or contents) to wpvulnerability.com. On a compromised box, that inventory may be sensitive — do not run --check-vulns from a network you don't want the request traffic associated with. Skip this flag if in doubt.",
+    privacy_note: "This check sends a list of your installed plugin/theme slugs (not versions or contents) to wpvulnerability.com. On a compromised box that inventory may be sensitive — do not run --check-vulns from a network you don't want the request traffic associated with. Skip this flag if in doubt.",
     source: "wpvulnerability.com (aggregates WPScan, Patchstack, WP.org). Response shape varies — adapter is best-effort.",
     wp_core: {
       installed_version: wpVersion,
@@ -491,129 +413,124 @@ async function checkVulnerabilities(wpRoot) {
       vulnerabilities_uncertain_match: core.unknown_match,
       fetch_error: coreApi?.error || null,
     },
-    plugins: {
-      total_checked: pluginResults.length,
-      with_vulnerabilities: pluginsWithVulns,
-      clean: pluginResults.length - pluginsWithVulns.length,
-    },
-    themes: {
-      total_checked: themeResults.length,
-      with_vulnerabilities: themesWithVulns,
-      clean: themeResults.length - themesWithVulns.length,
-    },
+    plugins: { total_checked: pluginResults.length, with_vulnerabilities: pluginsWithVulns, clean: pluginResults.length - pluginsWithVulns.length },
+    themes:  { total_checked: themeResults.length,  with_vulnerabilities: themesWithVulns,  clean: themeResults.length  - themesWithVulns.length  },
     severity: (core.vulns.length || pluginsWithVulns.length || themesWithVulns.length) > 0 ? "high" : "none",
-    note: "Known vulnerabilities affecting installed versions. Patch immediately; if exploitation predates patching, this is the likely entry point. Records under 'vulnerabilities_uncertain_match' could not be confirmed as affecting your version — manually verify each.",
+    note: "Known vulnerabilities affecting installed versions. Patch immediately; if exploitation predates patching, this is the likely entry point. Records under 'vulnerabilities_uncertain_match' could not be confirmed as affecting your version — verify manually.",
   };
 }
 
+function buildSignals({ phpInUploads, muPlugins, dropIns, baitDirs, knownMalwareFiles, patternScan, recentCore }) {
+  const truncationNote = (s) =>
+    s.fileListTruncated || s.filesReadTruncated > 0 || s.depthCapped
+      ? `SCAN TRUNCATED — file list capped at ${s.maxFilesScanned}, file bodies capped at ${s.maxFileBytes} bytes. A zero hit count does NOT mean clean. Run wp core verify-checksums + wp plugin verify-checksums --all and a full external scanner.`
+      : "Heuristic regex match — investigate each file before deletion.";
+
+  return {
+    php_in_uploads: {
+      count: phpInUploads.files.length,
+      files: phpInUploads.files.slice(0, 50),
+      severity: phpInUploads.files.length > 0 ? "high" : "none",
+      truncated: phpInUploads.truncated,
+      note: "PHP files inside wp-content/uploads/ are never legitimate.",
+    },
+    mu_plugins: {
+      exists: muPlugins.exists,
+      entries: muPlugins.entries,
+      severity: muPlugins.exists && muPlugins.entries.length > 0 ? "review" : "none",
+      note: "Auto-loaded; commonly missed during cleanup. Review every entry.",
+    },
+    drop_ins: {
+      present_in_wp_content: dropIns.present,
+      severity: dropIns.present.length > 0 ? "review" : "none",
+      note: "Drop-ins (object-cache.php, advanced-cache.php, db.php, etc.) auto-load from wp-content/. Verify each is legitimate (caching plugin, hosting provider, etc.).",
+    },
+    wp_flavored_bait_directories: {
+      directories: baitDirs,
+      severity: baitDirs.length > 0 ? "high" : "none",
+      note: "Plugin directories with WP-mimicking names are a known compromise pattern.",
+    },
+    known_malware_filenames: {
+      files: knownMalwareFiles.files,
+      severity: knownMalwareFiles.files.length > 0 ? "high" : "none",
+      truncated: knownMalwareFiles.truncated,
+      note: "Known web shell / malware-family file names.",
+    },
+    malware_pattern_hits: {
+      files_scanned: patternScan.filesScanned,
+      hits: patternScan.hits.slice(0, 200),
+      hit_count: patternScan.hits.length,
+      severity: patternScan.hits.length > 0 ? "high" : "none",
+      file_list_truncated: patternScan.fileListTruncated,
+      files_read_truncated: patternScan.filesReadTruncated,
+      depth_capped: patternScan.depthCapped,
+      note: truncationNote(patternScan),
+    },
+    recent_core_modifications: {
+      days_window: 30,
+      files: recentCore.slice(0, 50),
+      count: recentCore.length,
+      severity: recentCore.length > 0 ? "review" : "none",
+      note: "Recent mtime in wp-admin/wp-includes can mean either (a) a legitimate WP core update or (b) tampering. Mtimes reflect extraction/download time, not release date. Use wp core verify-checksums to distinguish — only checksum mismatches are evidence of tampering.",
+    },
+  };
+}
+
+function summarize(signals) {
+  const anyHigh = Object.values(signals).some((s) => s.severity === "high");
+  const anyReview = Object.values(signals).some((s) => s.severity === "review");
+  const pat = signals.malware_pattern_hits;
+  const scanTruncated = Boolean(pat.file_list_truncated || pat.files_read_truncated > 0 || pat.depth_capped
+    || signals.php_in_uploads.truncated || signals.known_malware_filenames.truncated);
+
+  let overall_severity, recommended_next_step;
+  if (anyHigh) {
+    overall_severity = "high";
+    recommended_next_step = "Multiple high-confidence indicators present. Proceed with full investigation per skill step 3 — but DO NOT skip the manual checks: this scan covers a subset of compromise patterns, not all.";
+  } else if (anyReview || scanTruncated) {
+    overall_severity = "review";
+    recommended_next_step = scanTruncated
+      ? "Scan was TRUNCATED (large site exceeded scan caps). A zero hit count is NOT evidence of clean. Run wp core verify-checksums, wp plugin verify-checksums --all, and a full external scanner (Sucuri, Wordfence, MalCare) before declaring clean."
+      : "Manually inspect 'review' signals before declaring clean.";
+  } else {
+    overall_severity = "none";
+    recommended_next_step = "No high-confidence indicators in this scan. Compromise still possible via paths this scan does not cover (cloaked SEO spam, DB-only injections, host-level, files past size cap). Consider an external scanner.";
+  }
+
+  return { overall_severity, scan_truncated: scanTruncated, recommended_next_step };
+}
+
 async function main() {
-  const args = process.argv.slice(2);
-  const checkVulns = args.includes("--check-vulns");
+  const checkVulns = process.argv.slice(2).includes("--check-vulns");
   const repoRoot = process.cwd();
   const wpRoot = detectWpRoot(repoRoot);
 
   if (!wpRoot) {
     process.stdout.write(JSON.stringify({
-      tool: { name: "detect_compromise_signals", version: 1 },
+      tool: TOOL_HEADER,
       project: { wpRootFound: false, repoRoot },
       message: "No WordPress install detected (no wp-includes/ found). Run skills/wp-project-triage/scripts/detect_wp_project.mjs first.",
     }, null, 2) + "\n");
     return;
   }
 
-  const phpInUploads = scanPhpInUploads(wpRoot);
-  const muPlugins = scanMuPlugins(wpRoot);
-  const dropIns = scanDropIns(wpRoot);
-  const baitDirs = scanWpFlavoredBaitDirs(wpRoot);
-  const knownMalwareFiles = scanKnownMalwareFilenames(wpRoot);
-  const patternScan = scanMalwarePatterns(wpRoot);
-  const recentCore = scanRecentCoreModifications(wpRoot);
-  const vulnReport = checkVulns ? await checkVulnerabilities(wpRoot) : null;
+  const signals = buildSignals({
+    phpInUploads:       scanPhpInUploads(wpRoot),
+    muPlugins:          scanMuPlugins(wpRoot),
+    dropIns:            scanDropIns(wpRoot),
+    baitDirs:           scanWpFlavoredBaitDirs(wpRoot),
+    knownMalwareFiles:  scanKnownMalwareFilenames(wpRoot),
+    patternScan:        scanMalwarePatterns(wpRoot),
+    recentCore:         scanRecentCoreModifications(wpRoot),
+  });
+  if (checkVulns) signals.known_vulnerabilities = await checkVulnerabilities(wpRoot);
 
-  const report = {
-    tool: { name: "detect_compromise_signals", version: 1 },
+  process.stdout.write(JSON.stringify({
+    tool: TOOL_HEADER,
     project: { wpRoot, repoRoot },
-    signals: {
-      php_in_uploads: {
-        count: phpInUploads.length,
-        files: phpInUploads.slice(0, 50),
-        severity: phpInUploads.length > 0 ? "high" : "none",
-        note: "PHP files inside wp-content/uploads/ are never legitimate.",
-      },
-      mu_plugins: {
-        exists: muPlugins.exists,
-        entries: muPlugins.entries,
-        severity: muPlugins.exists && muPlugins.entries.length > 0 ? "review" : "none",
-        note: "Auto-loaded; commonly missed during cleanup. Review every entry.",
-      },
-      drop_ins: {
-        present_in_wp_content: dropIns.present,
-        severity: dropIns.present.length > 0 ? "review" : "none",
-        note: "Drop-ins (object-cache.php, advanced-cache.php, db.php, etc.) auto-load from wp-content/. Verify each is legitimate (caching plugin, hosting provider, etc.).",
-      },
-      wp_flavored_bait_directories: {
-        directories: baitDirs,
-        severity: baitDirs.length > 0 ? "high" : "none",
-        note: "Plugin directories with WP-mimicking names are a known compromise pattern.",
-      },
-      known_malware_filenames: {
-        files: knownMalwareFiles,
-        severity: knownMalwareFiles.length > 0 ? "high" : "none",
-        note: "Known web shell / malware-family file names.",
-      },
-      malware_pattern_hits: {
-        files_scanned: patternScan.filesScanned,
-        hits: patternScan.hits.slice(0, 200),
-        hit_count: patternScan.hits.length,
-        severity: patternScan.hits.length > 0 ? "high" : "none",
-        file_list_truncated: patternScan.fileListTruncated,
-        files_read_truncated: patternScan.filesReadTruncated,
-        depth_capped: patternScan.depthCapped,
-        note: patternScan.fileListTruncated || patternScan.filesReadTruncated > 0 || patternScan.depthCapped
-          ? `SCAN TRUNCATED — file list capped at ${patternScan.maxFilesScanned}, file bodies capped at ${patternScan.maxFileBytes} bytes. A zero hit count does NOT mean clean. Run wp core verify-checksums + wp plugin verify-checksums --all and a full external scanner.`
-          : "Heuristic regex match — investigate each file before deletion.",
-      },
-      recent_core_modifications: {
-        days_window: 30,
-        files: recentCore.slice(0, 50),
-        count: recentCore.length,
-        severity: recentCore.length > 0 ? "review" : "none",
-        note: "Recent mtime in wp-admin/wp-includes can mean either (a) a legitimate WP core update or (b) tampering. Mtimes reflect extraction/download time, not release date. Use wp core verify-checksums to distinguish — only checksum mismatches are evidence of tampering.",
-      },
-    },
-  };
-
-  if (vulnReport) {
-    report.signals.known_vulnerabilities = vulnReport;
-  }
-
-  const anyHigh = Object.values(report.signals).some((s) => s.severity === "high");
-  const anyReview = Object.values(report.signals).some((s) => s.severity === "review");
-  const scanTruncated = report.signals.malware_pattern_hits.file_list_truncated
-    || report.signals.malware_pattern_hits.files_read_truncated > 0
-    || report.signals.malware_pattern_hits.depth_capped;
-
-  let overall, next;
-  if (anyHigh) {
-    overall = "high";
-    next = "Multiple high-confidence indicators present. Proceed with full investigation per skill step 3 — but DO NOT skip the manual checks: this scan covers a subset of compromise patterns, not all.";
-  } else if (anyReview || scanTruncated) {
-    overall = "review";
-    next = scanTruncated
-      ? "Scan was TRUNCATED (large site exceeded scan caps). A zero hit count is NOT evidence of clean. Run wp core verify-checksums, wp plugin verify-checksums --all, and a full external scanner (Sucuri, Wordfence, MalCare) before declaring clean."
-      : "Manually inspect 'review' signals before declaring clean.";
-  } else {
-    overall = "none";
-    next = "No high-confidence indicators in this scan. Compromise still possible via paths this scan does not cover (cloaked SEO spam, DB-only injections, host-level, files past size cap). Consider an external scanner.";
-  }
-
-  report.summary = {
-    overall_severity: overall,
-    scan_truncated: scanTruncated,
-    recommended_next_step: next,
-  };
-
-  process.stdout.write(JSON.stringify(report, null, 2) + "\n");
+    signals,
+    summary: summarize(signals),
+  }, null, 2) + "\n");
 }
 
 main().catch((err) => {
