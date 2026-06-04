@@ -226,7 +226,243 @@ function scanRecentCoreModifications(wpRoot, days = 30) {
   return recent;
 }
 
-function main() {
+// ---------------------------------------------------------------------------
+// Vulnerability lookup (optional, only when --check-vulns is passed)
+// ---------------------------------------------------------------------------
+//
+// Queries the wpvulnerability.com API (free, no API key required). The service
+// aggregates vulnerability data from WPScan, Patchstack, and WP.org sources.
+// Reference: https://www.wpvulnerability.com/
+//
+// Swappable: if you'd rather use WPScan or Patchstack directly, replace the
+// VULN_API_BASE constant and the response-shape adapters below.
+
+const VULN_API_BASE = "https://www.wpvulnerability.com/api/v3";
+const VULN_FETCH_TIMEOUT_MS = 5000;
+const VULN_CONCURRENCY = 5;
+
+function detectWpCoreVersion(wpRoot) {
+  const versionFile = path.join(wpRoot, "wp-includes", "version.php");
+  const content = readFileSafe(versionFile);
+  if (!content) return null;
+  const m = content.match(/\$wp_version\s*=\s*['"]([^'"]+)['"]/);
+  return m ? m[1] : null;
+}
+
+function parseWpPluginHeader(filePath) {
+  const content = readFileSafe(filePath, 16 * 1024);
+  if (!content) return null;
+  const nameMatch = content.match(/^[\s*]*Plugin Name:\s*(.+)$/im);
+  if (!nameMatch) return null;
+  const versionMatch = content.match(/^[\s*]*Version:\s*(.+)$/im);
+  return {
+    name: nameMatch[1].trim(),
+    version: versionMatch ? versionMatch[1].trim() : null,
+  };
+}
+
+function detectInstalledPlugins(wpRoot) {
+  const pluginsDir = path.join(wpRoot, "wp-content", "plugins");
+  if (!statSafe(pluginsDir)) return [];
+  const plugins = [];
+  let entries;
+  try {
+    entries = fs.readdirSync(pluginsDir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  for (const ent of entries) {
+    if (!ent.isDirectory()) continue;
+    const slug = ent.name;
+    const pluginDir = path.join(pluginsDir, slug);
+    // The main plugin file is usually <slug>.php; fall back to scanning .php files in the root
+    const candidates = [path.join(pluginDir, `${slug}.php`)];
+    try {
+      const dirEntries = fs.readdirSync(pluginDir);
+      for (const f of dirEntries) {
+        if (f.endsWith(".php") && !candidates.includes(path.join(pluginDir, f))) {
+          candidates.push(path.join(pluginDir, f));
+        }
+      }
+    } catch { /* ignore */ }
+    for (const candidate of candidates) {
+      const header = parseWpPluginHeader(candidate);
+      if (header) {
+        plugins.push({ slug, name: header.name, version: header.version });
+        break;
+      }
+    }
+  }
+  return plugins;
+}
+
+function parseWpThemeHeader(styleCssPath) {
+  const content = readFileSafe(styleCssPath, 8 * 1024);
+  if (!content) return null;
+  const nameMatch = content.match(/^[\s\/*]*Theme Name:\s*(.+)$/im);
+  if (!nameMatch) return null;
+  const versionMatch = content.match(/^[\s\/*]*Version:\s*(.+)$/im);
+  return {
+    name: nameMatch[1].trim(),
+    version: versionMatch ? versionMatch[1].trim() : null,
+  };
+}
+
+function detectInstalledThemes(wpRoot) {
+  const themesDir = path.join(wpRoot, "wp-content", "themes");
+  if (!statSafe(themesDir)) return [];
+  const themes = [];
+  let entries;
+  try {
+    entries = fs.readdirSync(themesDir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  for (const ent of entries) {
+    if (!ent.isDirectory()) continue;
+    const slug = ent.name;
+    const styleCss = path.join(themesDir, slug, "style.css");
+    const header = parseWpThemeHeader(styleCss);
+    if (header) {
+      themes.push({ slug, name: header.name, version: header.version });
+    }
+  }
+  return themes;
+}
+
+async function fetchJsonWithTimeout(url, timeoutMs = VULN_FETCH_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { signal: controller.signal, headers: { "User-Agent": "wp-abuse-detect-script/1" } });
+    if (!res.ok) return { error: `HTTP ${res.status}`, url };
+    const data = await res.json();
+    return { data, url };
+  } catch (e) {
+    return { error: String(e?.message || e), url };
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+function compareVersions(a, b) {
+  // Returns negative if a<b, 0 if equal, positive if a>b. Handles X.Y.Z and pre-release suffixes loosely.
+  const pa = String(a).split(/[.+-]/).map((p) => parseInt(p, 10));
+  const pb = String(b).split(/[.+-]/).map((p) => parseInt(p, 10));
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i += 1) {
+    const x = isNaN(pa[i]) ? 0 : pa[i];
+    const y = isNaN(pb[i]) ? 0 : pb[i];
+    if (x !== y) return x - y;
+  }
+  return 0;
+}
+
+function vulnAffectsInstalledVersion(vuln, installedVersion) {
+  if (!installedVersion) return true; // assume affected when version unknown
+  // wpvulnerability.com vuln records vary in shape; check operator-style fields, fallback to "patched_in"
+  const ops = vuln?.operator || vuln?.affected || null;
+  if (Array.isArray(ops)) {
+    for (const op of ops) {
+      const v = op?.version;
+      const operator = op?.operator;
+      if (!v || !operator) continue;
+      const cmp = compareVersions(installedVersion, v);
+      if (operator === "<=" && cmp <= 0) return true;
+      if (operator === "<" && cmp < 0) return true;
+      if (operator === "=" && cmp === 0) return true;
+      if (operator === ">=" && cmp >= 0) return true;
+      if (operator === ">" && cmp > 0) return true;
+    }
+    return false;
+  }
+  const patchedIn = vuln?.patched_in || vuln?.fixed_in;
+  if (patchedIn) return compareVersions(installedVersion, patchedIn) < 0;
+  return true;
+}
+
+function flattenVulnRecords(apiResult, installedVersion) {
+  // wpvulnerability.com response shape: { ..., vulnerabilities: [ { id, title, source, ..., operator: [...] } ] }
+  if (!apiResult?.data) return { error: apiResult?.error, vulns: [] };
+  const candidates = apiResult.data?.vulnerabilities || apiResult.data?.vulns || [];
+  const matched = [];
+  for (const v of candidates) {
+    if (vulnAffectsInstalledVersion(v, installedVersion)) {
+      matched.push({
+        id: v.id || v.cve || v.title?.slice(0, 40) || "unknown",
+        title: v.title || v.summary || null,
+        source: v.source || null,
+        severity: v.severity || v.cvss?.severity || null,
+        score: v.cvss?.score || null,
+        patched_in: v.patched_in || v.fixed_in || null,
+        url: v.source_url || v.url || null,
+      });
+    }
+  }
+  return { vulns: matched };
+}
+
+async function runWithConcurrency(items, worker, concurrency = VULN_CONCURRENCY) {
+  const results = [];
+  let i = 0;
+  const lanes = Array(Math.min(concurrency, items.length)).fill(0).map(async () => {
+    while (i < items.length) {
+      const idx = i++;
+      results[idx] = await worker(items[idx]);
+    }
+  });
+  await Promise.all(lanes);
+  return results;
+}
+
+async function checkVulnerabilities(wpRoot) {
+  const wpVersion = detectWpCoreVersion(wpRoot);
+  const plugins = detectInstalledPlugins(wpRoot);
+  const themes = detectInstalledThemes(wpRoot);
+
+  const corePromise = wpVersion
+    ? fetchJsonWithTimeout(`${VULN_API_BASE}/wordpress/${encodeURIComponent(wpVersion)}`)
+    : Promise.resolve({ error: "wp version not detected" });
+
+  const pluginResults = await runWithConcurrency(plugins, async (p) => {
+    const apiResult = await fetchJsonWithTimeout(`${VULN_API_BASE}/plugin/${encodeURIComponent(p.slug)}`);
+    const { vulns, error } = flattenVulnRecords(apiResult, p.version);
+    return { slug: p.slug, name: p.name, installed_version: p.version, vulnerabilities: vulns, fetch_error: error || apiResult?.error };
+  });
+
+  const themeResults = await runWithConcurrency(themes, async (t) => {
+    const apiResult = await fetchJsonWithTimeout(`${VULN_API_BASE}/theme/${encodeURIComponent(t.slug)}`);
+    const { vulns, error } = flattenVulnRecords(apiResult, t.version);
+    return { slug: t.slug, name: t.name, installed_version: t.version, vulnerabilities: vulns, fetch_error: error || apiResult?.error };
+  });
+
+  const coreApi = await corePromise;
+  const coreVulns = wpVersion ? flattenVulnRecords(coreApi, wpVersion).vulns : [];
+
+  const pluginsWithVulns = pluginResults.filter((p) => p.vulnerabilities.length > 0);
+  const themesWithVulns = themeResults.filter((t) => t.vulnerabilities.length > 0);
+
+  return {
+    source: "wpvulnerability.com (aggregates WPScan, Patchstack, WP.org)",
+    wp_core: { installed_version: wpVersion, vulnerabilities: coreVulns, fetch_error: coreApi?.error || null },
+    plugins: {
+      total_checked: pluginResults.length,
+      with_vulnerabilities: pluginsWithVulns,
+      clean: pluginResults.length - pluginsWithVulns.length,
+    },
+    themes: {
+      total_checked: themeResults.length,
+      with_vulnerabilities: themesWithVulns,
+      clean: themeResults.length - themesWithVulns.length,
+    },
+    severity: (coreVulns.length || pluginsWithVulns.length || themesWithVulns.length) > 0 ? "high" : "none",
+    note: "Known vulnerabilities affecting installed versions. Patch immediately; if exploitation predates patching, it may be the entry point for the active compromise.",
+  };
+}
+
+async function main() {
+  const args = process.argv.slice(2);
+  const checkVulns = args.includes("--check-vulns");
   const repoRoot = process.cwd();
   const wpRoot = detectWpRoot(repoRoot);
 
@@ -246,6 +482,7 @@ function main() {
   const knownMalwareFiles = scanKnownMalwareFilenames(wpRoot);
   const patternScan = scanMalwarePatterns(wpRoot);
   const recentCore = scanRecentCoreModifications(wpRoot);
+  const vulnReport = checkVulns ? await checkVulnerabilities(wpRoot) : null;
 
   const report = {
     tool: { name: "detect_compromise_signals", version: 1 },
@@ -295,6 +532,10 @@ function main() {
     },
   };
 
+  if (vulnReport) {
+    report.signals.known_vulnerabilities = vulnReport;
+  }
+
   const anyHigh = Object.values(report.signals).some((s) => s.severity === "high");
   const anyReview = Object.values(report.signals).some((s) => s.severity === "review");
   report.summary = {
@@ -309,4 +550,7 @@ function main() {
   process.stdout.write(JSON.stringify(report, null, 2) + "\n");
 }
 
-main();
+main().catch((err) => {
+  process.stderr.write(`detect_compromise_signals failed: ${err?.stack || err}\n`);
+  process.exit(1);
+});

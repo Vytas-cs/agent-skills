@@ -78,6 +78,20 @@ See [references/common-injection-points.md](references/common-injection-points.m
 
 **Don't skip the local-machine scan.** Per the [WordPress.org hacked-site FAQ](https://wordpress.org/documentation/article/faq-my-site-was-hacked/), a major vector for site compromise is the **site owner's own computer** being infected with malware that exfiltrates SFTP/admin credentials from saved sessions or browser storage. Before assuming the breach happened server-side, ask the user to run a current malware scan on every machine that has logged into the site. If their local machine is the source, all server-side cleanup is futile until that's resolved.
 
+**Check for known vulnerabilities affecting the installed versions.** A breach is often the result of an unpatched CVE in a specific plugin/theme/core version — knowing which CVE points at the entry point and confirms the attack vector. Run:
+
+```bash
+node skills/wp-abuse-and-compromise-response/scripts/detect_compromise_signals.mjs --check-vulns
+```
+
+This queries [wpvulnerability.com](https://www.wpvulnerability.com/) (free, no API key, aggregates WPScan + Patchstack + WP.org sources) for each detected component. Alternatives if you prefer different data sources:
+
+- **Patchstack** vulnerability database: https://patchstack.com/database/
+- **WPScan** API (free tier 25 requests/day; API key for more): https://wpscan.com/api
+- **Wordfence Intelligence** CVE feed: https://www.wordfence.com/threat-intel/
+
+If a vulnerability matching the installed version appears in the report, treat the unpatched component as the most likely entry point and prioritize patching it during step 4 (clean).
+
 ### 4) Clean
 
 Before any destructive step, confirm with the user:

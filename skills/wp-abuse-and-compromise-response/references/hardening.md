@@ -180,12 +180,32 @@ Remove anything that fails. Deactivated plugins still get loaded for admin pages
 
 Auto-updates for minor releases of core, plugins, and themes are reasonable. Major core updates should be tested on staging first.
 
-### Vulnerability scanning
+### Vulnerability scanning — ongoing
 
-Subscribe to a vuln feed and act on alerts. Options:
-- Wordfence (free + paid)
-- Patchstack (free + paid)
-- WPScan vulnerability database
+A patched install is a much smaller attack surface than an unpatched one. Three things to set up:
+
+**1. Subscribe to a vulnerability feed** so you hear about new CVEs against your installed plugins/themes/core within hours, not weeks:
+
+| Source | Cost | Notes |
+|---|---|---|
+| [Patchstack](https://patchstack.com/) | Free + paid | WordPress-focused database; free tier includes alerts |
+| [WPScan](https://wpscan.com/) | Free tier (25 API requests/day) + paid | Used by `wp-cli-vulnerability-scanner` plugin |
+| [Wordfence Intelligence](https://www.wordfence.com/threat-intel/) | Free | Public CVE feed; daily updates |
+| [wpvulnerability.com](https://www.wpvulnerability.com/) | Free, no API key | Community aggregator of WPScan/Patchstack/WP.org sources |
+
+**2. Run an automated weekly scan** of installed components against your chosen feed:
+
+```bash
+# Using the detect script from this skill (queries wpvulnerability.com)
+node skills/wp-abuse-and-compromise-response/scripts/detect_compromise_signals.mjs --check-vulns
+
+# Or use a security plugin's built-in scanner
+wp wordfence scan          # if Wordfence is installed
+```
+
+Cron this from real server cron (not WP cron) so it runs even if WP itself is misbehaving. Alert on any non-empty result.
+
+**3. Patch promptly.** A CVE is worthless to an attacker once the version is patched. The window between disclosure and exploitation is now measured in hours for popular plugins.
 
 ### Premium plugin verification
 
